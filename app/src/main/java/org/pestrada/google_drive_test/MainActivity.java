@@ -8,27 +8,29 @@ import android.support.design.widget.Snackbar;
 import android.support.v7.app.AppCompatActivity;
 import android.support.v7.widget.Toolbar;
 import android.util.Log;
-import android.view.View;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.view.View;
 import android.widget.Toast;
 
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.GoogleApiAvailability;
-import com.google.android.gms.common.GooglePlayServicesUtil;
 import com.google.android.gms.common.api.GoogleApiClient;
 import com.google.android.gms.common.api.ResultCallback;
 import com.google.android.gms.drive.Drive;
 import com.google.android.gms.drive.DriveApi;
+import com.google.android.gms.drive.DriveContents;
 import com.google.android.gms.drive.DriveFolder;
-import com.google.android.gms.drive.DriveId;
 import com.google.android.gms.drive.MetadataChangeSet;
 
+import java.io.IOException;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
+
 public class MainActivity extends AppCompatActivity implements GoogleApiClient.OnConnectionFailedListener, GoogleApiClient.ConnectionCallbacks {
-    private static final int RESOLVE_CONNECTION_REQUEST_CODE = 0;
     private static final String TAG = "GDrive";
-    private static final int REQUEST_CODE_RESOLUTION = 0;
-    private static final String EXISTING_FOLDER_ID = "0B5iemevmZDFvb0Q1MWc3dTZNSXM";
+    private static final int REQUEST_CODE_RESOLUTION = 1;
     GoogleApiClient mGoogleApiClient;
 
     @Override
@@ -115,19 +117,16 @@ public class MainActivity extends AppCompatActivity implements GoogleApiClient.O
 
     @Override
     protected void onActivityResult(final int requestCode, final int resultCode, final Intent data) {
-        switch (requestCode) {
-            case RESOLVE_CONNECTION_REQUEST_CODE:
-                if (resultCode == RESULT_OK) {
-                    mGoogleApiClient.connect();
-                }
-                break;
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_CODE_RESOLUTION && resultCode == RESULT_OK) {
+            mGoogleApiClient.connect();
         }
     }
 
     @Override
     public void onConnected(Bundle bundle) {
-        Drive.DriveApi.fetchDriveId(mGoogleApiClient, EXISTING_FOLDER_ID)
-                .setResultCallback(idCallback);
+        Drive.DriveApi.newDriveContents(mGoogleApiClient)
+                .setResultCallback(driveContentsCallback);
         Log.i(TAG, "GoogleApiClient connected");
     }
 
@@ -136,47 +135,53 @@ public class MainActivity extends AppCompatActivity implements GoogleApiClient.O
         Log.i(TAG, "GoogleApiClient connection suspended");
     }
 
-    private DriveId mFolderDriveId;
-    final private ResultCallback<DriveApi.DriveIdResult> idCallback = new ResultCallback<DriveApi.DriveIdResult>() {
-        @Override
-        public void onResult(DriveApi.DriveIdResult result) {
-            if (!result.getStatus().isSuccess()) {
-                showMessage("Cannot find DriveId. Are you authorized to view this file?");
-                return;
-            }
-            mFolderDriveId = result.getDriveId();
-            Drive.DriveApi.newDriveContents(mGoogleApiClient)
-                    .setResultCallback(driveContentsCallback);
-        }
-    };
-
-    final private ResultCallback<DriveApi.DriveContentsResult> driveContentsCallback =
-            new ResultCallback<DriveApi.DriveContentsResult>() {
+    final private ResultCallback<DriveApi.DriveContentsResult> driveContentsCallback = new
+            ResultCallback<DriveApi.DriveContentsResult>() {
                 @Override
                 public void onResult(DriveApi.DriveContentsResult result) {
                     if (!result.getStatus().isSuccess()) {
                         showMessage("Error while trying to create new file contents");
                         return;
                     }
-                    DriveFolder folder = mFolderDriveId.asDriveFolder();
-                    MetadataChangeSet changeSet = new MetadataChangeSet.Builder()
-                            .setTitle("New file")
-                            .setMimeType("text/plain")
-                            .setStarred(true).build();
-                    folder.createFile(mGoogleApiClient, changeSet, result.getDriveContents())
-                            .setResultCallback(fileCallback);
+                    final DriveContents driveContents = result.getDriveContents();
+
+                    // Perform I/O off the UI thread.
+                    new Thread() {
+                        @Override
+                        public void run() {
+                            // write content to DriveContents
+                            OutputStream outputStream = driveContents.getOutputStream();
+                            Writer writer = new OutputStreamWriter(outputStream);
+                            try {
+                                writer.write("Hello World!");
+                                writer.close();
+                            } catch (IOException e) {
+                                Log.e(TAG, e.getMessage());
+                            }
+
+                            MetadataChangeSet changeSet = new MetadataChangeSet.Builder()
+                                    .setTitle("New file")
+                                    .setMimeType("text/plain")
+                                    .build();
+
+                            // create a file on root folder
+                            Drive.DriveApi.getRootFolder(mGoogleApiClient)
+                                    .createFile(mGoogleApiClient, changeSet, driveContents)
+                                    .setResultCallback(fileCallback);
+                        }
+                    }.start();
                 }
             };
 
-    final private ResultCallback<DriveFolder.DriveFileResult> fileCallback =
-            new ResultCallback<DriveFolder.DriveFileResult>() {
+    final private ResultCallback<DriveFolder.DriveFileResult> fileCallback = new
+            ResultCallback<DriveFolder.DriveFileResult>() {
                 @Override
                 public void onResult(DriveFolder.DriveFileResult result) {
                     if (!result.getStatus().isSuccess()) {
                         showMessage("Error while trying to create the file");
                         return;
                     }
-                    showMessage("Created a file: " + result.getDriveFile().getDriveId());
+                    showMessage("Created a file with content: " + result.getDriveFile().getDriveId());
                 }
             };
 
